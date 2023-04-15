@@ -2,20 +2,23 @@ import asyncio
 import aiohttp
 import aiofiles
 import aiofiles.os
-import os
 import hashlib
+import os
 from bs4 import BeautifulSoup
 from collections import deque
+from pathlib import Path
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BASE_URL = 'https://gitea.radium.group'
-LOCAL_URL = '/radium/project-configuration'
+FULL_URL = 'https://gitea.radium.group/radium/project-configuration'
 BRANCH_NAME = 'master'
 FOLDER_TO_SAVE = 'temp_folder'
 NUMBER_OF_WORKERS = 3
+
+BASE_URL = FULL_URL[:FULL_URL.index('/', 8)]
+LOCAL_URL = FULL_URL.replace(BASE_URL, '')
 QUEUE = deque()
 
 
@@ -49,7 +52,7 @@ def append_to_queue(soup: BeautifulSoup, len_source: int) -> None:
     """
     for a_tag in soup.find('tbody').findAll('a'):
         url = a_tag.get('href', '')
-        if url.startswith(f'{LOCAL_URL}/src') and len(url) > len_source:
+        if '/src/' in url and len(url) > len_source:
             QUEUE.append(url)
 
 
@@ -65,7 +68,7 @@ async def download_file(client: aiohttp.ClientSession, soup: BeautifulSoup, idx:
     """
     for a_tag in soup.findAll('a'):
         url = a_tag.get('href', '')
-        if url.startswith(f'{LOCAL_URL}/raw'):
+        if '/raw/' in url:
             path = os.path.join(FOLDER_TO_SAVE, url.split(BRANCH_NAME)[-1][1:])
             logger.info(f'Worker_{idx} starts downloading to {path!r}')
             text = await fetch_from_url(client=client, url=f'{BASE_URL}{url}')
@@ -89,7 +92,7 @@ async def fetch_from_url(client: aiohttp.ClientSession, url: str) -> bytes:
                 logger.error(f'Error! {response.status=} from {url!r}. {attempt=}')
 
 
-async def write_to_disk(path: str, text: bytes) -> None:
+async def write_to_disk(path: str | Path, text: bytes) -> None:
     """
     Write bytestring to `path` (create all necessary folders).
 
@@ -98,8 +101,7 @@ async def write_to_disk(path: str, text: bytes) -> None:
     :return: None
     """
     folder = os.path.dirname(path)
-    created = await aiofiles.os.path.exists(folder)
-    if not created:
+    if folder and not os.path.exists(folder):
         await aiofiles.os.makedirs(folder, exist_ok=True)
     async with aiofiles.open(path, 'wb') as file:
         await file.write(text)
@@ -112,7 +114,7 @@ async def download_repo() -> None:
     :return: None
     """
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(5)) as client:
-        text = await fetch_from_url(client=client, url=f'{BASE_URL}{LOCAL_URL}')
+        text = await fetch_from_url(client=client, url=FULL_URL)
         soup = BeautifulSoup(text, 'html.parser')
         append_to_queue(soup=soup, len_source=len(LOCAL_URL))
 
@@ -120,7 +122,7 @@ async def download_repo() -> None:
         await asyncio.gather(*tasks)
 
 
-def hash_print(folder: str) -> None:
+def hash_print(folder: str | Path) -> None:
     """
     Print SHA256 hash of each file in `folder` (recursively).
 
@@ -134,19 +136,10 @@ def hash_print(folder: str) -> None:
             with open(path, 'rb') as file_obj:
                 for row in file_obj:
                     hash_obj.update(row)
-            print(path)
+            print('FILE:', path)
             print('SHA256:', hash_obj.hexdigest())
 
 
-def main() -> None:
-    """
-    Download repository to `FOLDER_TO_SAVE`, then print hash of each file.
-
-    :return:
-    """
+if __name__ == '__main__':
     asyncio.run(download_repo())
     hash_print(FOLDER_TO_SAVE)
-
-
-if __name__ == '__main__':
-    main()
